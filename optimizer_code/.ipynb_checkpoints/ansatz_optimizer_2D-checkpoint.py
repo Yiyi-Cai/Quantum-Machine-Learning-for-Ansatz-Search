@@ -9,7 +9,7 @@ import random
 import time
 import multiprocessing as mp
 from itertools import combinations
-qml.__version__
+
 
 
 n_qubits = 8
@@ -188,7 +188,12 @@ class IndividualCircuit:
         self.target = target
         self.LR = []
         
-    def train(self, circuit, n_steps=None, scheduled=False):
+    def train(self, circuit, order=None, n_steps=None, scheduled=False):
+        if not order == None:
+            time.sleep(0.1*order)
+        with contextlib.redirect_stdout(None):
+            exec('import setGPU')
+        
         trained_params = self.params.copy()
         start = time.mktime(time.gmtime())
         stop = start
@@ -256,8 +261,8 @@ class IndividualCircuit:
             return True
 
 
-    def train_fitness(self, n_steps=None, scheduled=False):
-        self.train(convert_tensor_to_circuit, n_steps, scheduled)
+    def train_fitness(self, order=None, n_steps=None, scheduled=False):
+        self.train(convert_tensor_to_circuit,order, n_steps, scheduled)
         self.fitness = self.fitnesses[self.best_loss_idx]
     
     def get_fitness(self):
@@ -352,8 +357,9 @@ class Population:
     def train_all(self):
         start_time = time.time()
         procs = []
-        for circuit in self.individuals:
-            proc = mp.Process(target=circuit.train_fitness())
+        for i in range(len(self.individuals)):
+            circuit = self.individuals[i]
+            proc = mp.Process(target=circuit.train_fitness(order=i))
             procs.append(proc)
             proc.start()
         
@@ -364,6 +370,7 @@ class Population:
         exec_time = end_time - start_time
         print("Execution time multiprocessing {}".format(exec_time))
         self.update()
+        
         
     def train_linear(self):
         start_time = time.time()
@@ -376,8 +383,12 @@ class Population:
     
     
     def get_fittests(self, num_fittests):
+        """
+        RETURN: copies of IndividualCircuit Objects
+        """
         self.fittest = self.individuals[0]
-        return self.individuals[:num_fittests]     
+        fittests = self.individuals[:num_fittests]
+        return copy.deepcopy(fittests)    
              
   
 class CircuitOptimizer:
@@ -584,17 +595,7 @@ class CircuitOptimizer:
                     # self.offsprings.remove_circuit(curr_offspring)
                     i -= 1
                     # identical_circuits += 1
-            curr_offspring.update_params()
-        
-#         if identical_circuits > 0:
-#              generate_distinct_circuits(identical_circuits)
-        
-    
-#     def generate_distinct_circuits(self, identical_circuits):
-#         quantity = self.parent_size - identical_circuits
-#         if identical_circuits < self.parent_size:
-            
-                    
+            curr_offspring.update_params()                    
                     
                     
     def plot_all(self):

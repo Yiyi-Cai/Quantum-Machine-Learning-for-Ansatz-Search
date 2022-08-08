@@ -8,8 +8,8 @@ import pennylane as qml
 import random
 import time
 import multiprocessing as mp
+import copy
 from itertools import combinations
-qml.__version__
 
 
 n_qubits = 4
@@ -138,6 +138,8 @@ def hybrid_jensen_shannon_loss(pk,qk):
     p = target
     q = hybrid_pdf(params,fixed_params=fixed_params)
     M = np.multiply(q+p,0.5)
+    
+    # store these values 
 
     return 0.5*qml_entropy(p,M)+0.5*qml_entropy(q,M)
 
@@ -188,7 +190,11 @@ class IndividualCircuit:
         self.target = target
         self.LR = []
         
-    def train(self, circuit, n_steps=None, scheduled=False):
+    def train(self, circuit, order=None, n_steps=None, scheduled=False):
+        if not order == None:
+            time.sleep(0.1*order)
+        with contextlib.redirect_stdout(None):
+            exec('import setGPU')
         trained_params = self.params.copy()
         start = time.mktime(time.gmtime())
         stop = start
@@ -201,14 +207,12 @@ class IndividualCircuit:
             # update the circuit parameters in each iteration
             prelap = time.mktime(time.gmtime())
             iteration = len(self.losses)
-            # print('starting iteration {}'.format(len(self.losses)+1))
             if scheduled: 
                 opt=scheduled_opt(len(self.losses))
             trained_params, L = opt.step_and_cost(lambda v: self.loss_1d(circuit,v), trained_params)
             lap = start = time.mktime(time.gmtime())
             step_time = lap - prelap
             stop+=step_time
-            # L = loss(trained_params) 
             self.losses.append( L )
             
             # if adaptLR(self.losses, opt):
@@ -254,15 +258,11 @@ class IndividualCircuit:
             plt.ylabel('training loss')
             plt.show()
             return True
+        
 
-
-    def train_fitness(self, n_steps=None, scheduled=False):
-        # start_time = time.time()
-        self.train(convert_tensor_to_circuit, n_steps, scheduled)
+    def train_fitness(self, order=None, n_steps=None, scheduled=False):
+        self.train(convert_tensor_to_circuit,order, n_steps, scheduled)
         self.fitness = self.fitnesses[self.best_loss_idx]
-        # end_time = time.time()
-        # exec_time = end_time - start_time
-        # print("Execution time multiprocessing {}".format(exec_time))
     
     def get_fitness(self):
         return self.fitness
@@ -290,7 +290,6 @@ class IndividualCircuit:
         plt.show()
     
     def update_params(self):
-        print("updating params...")
         self.params = (2.*np.pi)*np.random.random(get_num_params(self.tensor, self.n_qubits, self.num_one_gates, self.num_two_gates))
         
     def get_tensor(self):
@@ -298,9 +297,6 @@ class IndividualCircuit:
         
     def loss_1d(self, circuit, params):
         return jensen_shannon_loss(circuit(self.tensor, params, self.n_qubits, self.num_one_gates, self.num_two_gates), self.target)
-    
-    def loss_2d(self, circuit, params):
-        return jensen_shannon_loss(circuit(self.tensor, params, self.n_qubits, self.num_one_gates, self.num_two_gates).reshape(16,16),self.target.reshape(16,16))
     
     
 
@@ -310,9 +306,9 @@ class Population:
         self.individuals = []
         self.fittest = None
         self.least_fittest = None
+        
     
     def fill_population(self, pop_size, target, num_one_gates, num_two_gates, max_moments, n_qubits):
-               
         for i in range(pop_size):
             unique = True
             random_tensor = generate_random_tensor(n_qubits, num_one_gates, num_two_gates, max_moments)
@@ -334,6 +330,7 @@ class Population:
         if increase_size:
             self.pop_size += 1
         self.update()
+        
     
     def add_circuits(self, circuits, increase_size=True):
         self.individuals.extend(circuits.individuals)
@@ -342,6 +339,7 @@ class Population:
         self.update()
     
     def get_fittest_fitness(self):
+        self.update()
         return self.fittest.get_fitness()
     
     def remove_circuit(self, circuit):
@@ -360,8 +358,9 @@ class Population:
     def train_all(self):
         start_time = time.time()
         procs = []
-        for circuit in self.individuals:
-            proc = mp.Process(target=circuit.train_fitness())
+        for i in range(len(self.individuals)):
+            circuit = self.individuals[i]
+            proc = mp.Process(target=circuit.train_fitness(order=i))
             procs.append(proc)
             proc.start()
         
@@ -384,13 +383,15 @@ class Population:
     
     
     def get_fittests(self, num_fittests):
+        """
+        RETURN: copies of IndividualCircuit Objects
+        """
         self.fittest = self.individuals[0]
-        return self.individuals[:num_fittests]     
+        fittests = self.individuals[:num_fittests]
+        return copy.deepcopy(fittests)
+            
                
-        
-        
 
-     
         
 class CircuitOptimizer:
     
@@ -430,12 +431,6 @@ class CircuitOptimizer:
         self.offsprings.train_all()
             
     def add_offsprings(self):
-#         for offspring in self.offsprings.individuals:
-#             compare = len(offspring.params) == get_num_params(tensor, n_qubits, num_one_gates, num_two_gates)
-#             if not compare:
-#                 print(offspring.tensor)
-
-#                 offspring.draw()
         self.population.add_circuits(self.offsprings, increase_size=False)
         self.population.individuals = self.population.individuals[:-len(self.offsprings.individuals)]
         self.offsprings = Population()
@@ -449,6 +444,210 @@ class CircuitOptimizer:
     # choose the two most fit
     def selection(self):
         self.parents = self.population.get_fittests(self.parents_size)
+            
+        
+    
+    # choose a random moment as the crossover point, then swap the rest of the moments
+    def crossover(self):
+        for i in range(0, len(self.parents)-1, 2):
+            parent1 = self.parents[i]
+            parent2 = self.parents[i+1]
+            self.crossover_pair(parent1, parent2)
+        if len(self.parents) % 2 == 1:
+            parent1 = self.parents[-1]
+            parent2 = random.choice(self.parents[:len(self.parents)-1])
+            self.crossover_pair(parent1, parent2)
+        
+            
+    
+    def crossover_pair(self, parent1, parent2):
+        if len(parent1.tensor) == 1:
+            cross_pt1 = random.randint(1, len(parent1.tensor))
+            tensor1 = parent1.get_tensor()
+            if len(parent2.tensor) == 1:
+                cross_pt2 = random.randint(1, len(parent2.tensor))
+                tensor2 = parent2.get_tensor()
+            else:
+                cross_pt2 = random.randint(1, len(parent2.tensor)-1)
+                tensor2 = parent2.get_tensor()[:cross_pt2]
+                tensor1 += parent2.get_tensor()[:cross_pt2]
+        elif len(parent2.tensor) == 1:
+            cross_pt2 = random.randint(1, len(parent2.tensor))
+            tensor2 = parent2.get_tensor()
+            cross_pt1 = random.randint(1, len(parent1.tensor)-1)
+            tensor1 = parent1.get_tensor()[:cross_pt1]
+            tensor2 += parent1.get_tensor()[:cross_pt1]
+        else:
+            cross_pt1 = random.randint(1, len(parent1.tensor)-1)
+            cross_pt2 = random.randint(1, len(parent2.tensor)-1)
+            tensor1 = parent1.get_tensor()[:cross_pt1] + parent2.get_tensor()[cross_pt2:]
+            tensor2 = parent2.get_tensor()[:cross_pt2] + parent1.get_tensor()[cross_pt1:]
+            
+        
+        
+        
+        params1 = (2.*np.pi)*np.random.random(get_num_params(tensor1, self.n_qubits, self.num_one_gates, self.num_two_gates))
+        params2 = (2.*np.pi)*np.random.random(get_num_params(tensor2, self.n_qubits, self.num_one_gates, self.num_two_gates))
+        
+        self.offsprings.add_circuit(IndividualCircuit(tensor1, self.target, self.num_one_gates, self.num_two_gates, self.n_qubits))
+        self.offsprings.add_circuit(IndividualCircuit(tensor2, self.target, self.num_one_gates, self.num_two_gates, self.n_qubits))
+    
+        
+    
+    
+    
+    # choose a random point to switch on/off the gate; for two qubit gates, the target gate is changed to a random value
+    def mutate(self):
+        for i in range(len(self.offsprings.individuals)):
+            
+            curr_offspring = self.offsprings.individuals[i]
+            mutate_gate = random.randint(0, self.num_one_gates-1)
+            mutate_moment = random.randint(0, len(curr_offspring.tensor)-1)
+            qubits_options = []
+            curr_moment = curr_offspring.tensor[mutate_moment]
+
+            ## mutate one qubit gate
+            if random.randint(0, 1):
+                
+                for q in range(len(curr_moment)):
+                    curr_qubit = curr_moment[q]
+                    if not any(curr_qubit[self.num_one_gates:]):
+                        qubits_options.append(q)
+                
+                
+                if len(qubits_options) == 0:
+                    i -= 1
+                    continue
+                
+                
+                mutate_qubit = random.choice(qubits_options)
+                qubits_options.remove(mutate_qubit)  
+                
+                
+                q = curr_offspring.tensor[mutate_moment][mutate_qubit]
+                q[mutate_gate] = curr_offspring.tensor[mutate_moment][mutate_qubit][mutate_gate] ^ 1
+                for i in range(self.num_one_gates + self.num_two_gates):
+                    if q[i] and not i == mutate_gate:
+                        q[i] = 0
+                                
+                
+                
+                
+            # mutate two qubit gate
+            else:
+                two_gates_idx = self.num_one_gates + random.randrange(0, self.num_two_gates*2, 2)
+                
+                for q in range(len(curr_moment)):
+                    curr_qubit = curr_moment[q]                        
+                    if not any(curr_qubit[:two_gates_idx]):
+                        if two_gates_idx + 2 < len(curr_qubit):
+                            if not any(curr_qubit[two_gates_idx+2:]):
+                                qubits_options.append(q)
+                        else:
+                            qubits_options.append(q)
+                
+                if len(qubits_options) <= 1:
+                    i -= 1
+                    continue
+                
+                mutate_qubit = random.choice(qubits_options)
+                qubits_options.remove(mutate_qubit)  
+                
+                no_gates_qubits = []
+                for qubit in qubits_options:
+                    if not any(curr_moment[qubit]):
+                        no_gates_qubits.append(qubit)
+                
+                if not curr_moment[mutate_qubit][two_gates_idx] == 0:
+                    choice = random.randint(0,2)
+                    if choice == 0:
+                        self.swap(qubits_options, curr_moment, mutate_qubit, two_gates_idx)
+                    elif choice == 1:
+                        self.turn_off(qubits_options, curr_moment, mutate_qubit, two_gates_idx) 
+                    else:
+                        if len(no_gates_qubits) == 0:
+                            i -= 1
+                            continue
+                        self.mutate_one(no_gates_qubits, curr_moment, mutate_qubit, two_gates_idx)
+                        
+                elif not curr_moment[mutate_qubit][two_gates_idx+1] == 0:
+                    choice = random.randint(0,2)
+                    if choice == 0:
+                        self.swap(qubits_options, curr_moment, mutate_qubit, two_gates_idx+1, target=True)
+                    elif choice == 1:
+                        self.turn_off(qubits_options, curr_moment, mutate_qubit, two_gates_idx+1, target=True)
+                    else:
+                        if len(no_gates_qubits) == 0:
+                            i -= 1
+                            continue
+                        self.mutate_one(no_gates_qubits, curr_moment, mutate_qubit, two_gates_idx+1, target=True)
+                    
+                else:
+                    if len(no_gates_qubits) == 0:
+                        i -= 1
+                        continue
+                    else:
+                        new_qubit = random.choice(no_gates_qubits)
+                        curr_moment[mutate_qubit][two_gates_idx] = new_qubit + 1
+                        curr_moment[new_qubit][two_gates_idx+1] = mutate_qubit + 1
+            for j in range(len(self.population.individuals)):
+                if self.population.individuals[j].tensor == curr_offspring.tensor:
+                    # self.offsprings.remove_circuit(curr_offspring)
+                    i -= 1
+                    # identical_circuits += 1
+            curr_offspring.update_params()
+            
+                    
+                    
+                    
+    def plot_all(self):
+        for circuit in self.population.individuals:
+            circuit.plot_fitness()
+            
+    
+    def plot_offsprings(self):
+        for circuit in self.offsprings.individuals:
+            circuit.plot_fitness()
+            
+                    
+    def swap(self, qubits_options, curr_moment, mutate_qubit, two_gates_idx, target=False):
+        if target:
+            new_target = curr_moment[mutate_qubit][two_gates_idx] -1
+            new_control = mutate_qubit
+            curr_moment[mutate_qubit][two_gates_idx-1] = new_target + 1
+            curr_moment[new_target][two_gates_idx] = new_control + 1
+            curr_moment[mutate_qubit][two_gates_idx] = 0
+            curr_moment[new_target][two_gates_idx - 1] = 0
+        else:
+            new_control = curr_moment[mutate_qubit][two_gates_idx] - 1
+            new_target = mutate_qubit
+            curr_moment[mutate_qubit][two_gates_idx+1] = new_control + 1
+            curr_moment[new_control][two_gates_idx] = new_target + 1
+            curr_moment[mutate_qubit][two_gates_idx] = 0
+            curr_moment[new_control][two_gates_idx+1] = 0
+    
+    def turn_off(self, qubits_options, curr_moment, mutate_qubit, two_gates_idx, target=False):
+        if target:
+            curr_control = curr_moment[mutate_qubit][two_gates_idx] -1
+            curr_moment[curr_control][two_gates_idx-1] = 0
+            curr_moment[mutate_qubit][two_gates_idx] = 0
+        else:
+            curr_target = curr_moment[mutate_qubit][two_gates_idx] - 1
+            curr_moment[curr_target][two_gates_idx+1] = 0
+            curr_moment[mutate_qubit][two_gates_idx] = 0
+    
+    def mutate_one(self, qubits_options, curr_moment, mutate_qubit, two_gates_idx, target=False):
+        new_qubit = random.choice(qubits_options)
+        target_q = curr_moment[mutate_qubit][two_gates_idx]
+        
+        curr_moment[new_qubit][two_gates_idx] = target_q
+        curr_moment[mutate_qubit][two_gates_idx] = 0
+        if target:
+            curr_moment[target_q-1][two_gates_idx-1] = new_qubit+1
+        else:
+            curr_moment[target_q-1][two_gates_idx+1] = new_qubit+1
+        qubits_options.remove(new_qubit)
+        
             
         
     
@@ -602,18 +801,7 @@ class CircuitOptimizer:
                     # self.offsprings.remove_circuit(curr_offspring)
                     i -= 1
                     # identical_circuits += 1
-            curr_offspring.update_params()
-        
-#         if identical_circuits > 0:
-#              generate_distinct_circuits(identical_circuits)
-        
-    
-#     def generate_distinct_circuits(self, identical_circuits):
-#         quantity = self.parent_size - identical_circuits
-#         if identical_circuits < self.parent_size:
-            
-                    
-                    
+            curr_offspring.update_params()                    
                     
     def plot_all(self):
         for circuit in self.population.individuals:
